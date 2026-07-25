@@ -1,0 +1,79 @@
+version: "3.9"
+services:
+  engine:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.engine
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./models_cache:/app/models_cache
+    environment:
+      - TALKING_HEAD_PROFILE=gpu_single
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/talkinghead
+      # Uncomment when running on a GPU host:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    depends_on:
+      - redis
+      - db
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=talkinghead
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  engine-worker:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.engine
+    command: rq worker -u redis://redis:6379/0 default
+    volumes:
+      - ./data:/app/data
+      - ./models_cache:/app/models_cache
+    environment:
+      - TALKING_HEAD_PROFILE=gpu_single
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/talkinghead
+    depends_on:
+      - redis
+      - db
+    # Uncomment when running on a GPU host to enable multi-GPU scheduling:
+    # deploy:
+    #   mode: replicated
+    #   replicas: 2
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.web
+    ports:
+      - "5173:80"
+    depends_on:
+      - engine
+
+volumes:
+  postgres_data:

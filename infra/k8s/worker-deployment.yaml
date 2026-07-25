@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: engine-worker
+  labels:
+    app: talking-head-engine
+    component: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: talking-head-engine
+      component: worker
+  template:
+    metadata:
+      labels:
+        app: talking-head-engine
+        component: worker
+    spec:
+      containers:
+      - name: worker
+        image: talking-head-engine:latest
+        command: ["rq", "worker", "-u", "$(REDIS_URL)", "default"]
+        env:
+        - name: TALKING_HEAD_PROFILE
+          value: "gpu_cloud"
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: engine-secrets
+              key: redis-url
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: engine-secrets
+              key: database-url
+        resources:
+          limits:
+            nvidia.com/gpu: 1  # GPU-aware scheduling: 1 GPU per pod
+          requests:
+            nvidia.com/gpu: 1
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: engine-worker-scaler
+spec:
+  scaleTargetRef:
+    name: engine-worker
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  triggers:
+  - type: redis
+    metadata:
+      address: "$(REDIS_URL)" # KEDA needs direct access or a secret
+      listName: "rq:queue:default"
+      listLength: "5"  # Scale out for every 5 jobs in the queue

@@ -1,0 +1,10 @@
+Frontend
+cd web
+npm run dev
+Local: http://localhost:5173/
+
+Backend
+cd engine
+.venv\Scripts\Activate.ps1
+uvicorn app.main:app --reload --port 8000
+Local: http://localhost:8000/docs
