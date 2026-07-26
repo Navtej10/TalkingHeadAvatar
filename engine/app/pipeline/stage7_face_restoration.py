@@ -38,7 +38,28 @@ class FaceRestorationStage(PipelineStage):
         restored_frames_dir = f"{TMP_DIR}/{job_id}/frames_restored"
         os.makedirs(restored_frames_dir, exist_ok=True)
 
+        source_path = context.get("images", {}).get("source")
+        source_img = cv2.imread(source_path) if source_path and os.path.exists(source_path) else None
+        
+        tgt_mean, tgt_std = None, None
+        noise_std = 0.0
+        
+        import numpy as np
+        if source_img is not None:
+            # 1. Color Grading Target (Reinhard)
+            src_lab = cv2.cvtColor(source_img, cv2.COLOR_BGR2LAB).astype(np.float32)
+            tgt_mean, tgt_std = cv2.meanStdDev(src_lab)
+            
+            # 2. Noise Estimation (using Laplacian variance proxy)
+            gray = cv2.cvtColor(source_img, cv2.COLOR_BGR2GRAY)
+            laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+            # Standard deviation of laplacian gives a rough proxy of high-frequency noise/texture
+            # We scale it down because we only want subtle film grain
+            noise_std = np.clip(np.std(laplacian) * 0.1, 1.0, 15.0)
+
+        sharpness_scores = []
         frame_files = sorted(glob.glob(os.path.join(input_frames_dir, "*.png")))
+        
         for f in frame_files:
             frame = cv2.imread(f)
             if frame is None:
@@ -46,8 +67,32 @@ class FaceRestorationStage(PipelineStage):
                 
             restored_frame = self.restorer.restore_frame(frame)
             
+            # Apply Grading
+            if tgt_mean is not None and tgt_std is not None:
+                res_lab = cv2.cvtColor(restored_frame, cv2.COLOR_BGR2LAB).astype(np.float32)
+                res_mean, res_std = cv2.meanStdDev(res_lab)
+                res_std[res_std == 0] = 1e-5
+                
+                out_lab = (res_lab - res_mean.reshape(1,1,3)) * (tgt_std.reshape(1,1,3) / res_std.reshape(1,1,3)) + tgt_mean.reshape(1,1,3)
+                out_lab = np.clip(out_lab, 0, 255).astype(np.uint8)
+                restored_frame = cv2.cvtColor(out_lab, cv2.COLOR_LAB2BGR)
+                
+            # Apply Noise Injection
+            if noise_std > 0:
+                noise = np.random.normal(0, noise_std, restored_frame.shape).astype(np.float32)
+                restored_frame = np.clip(restored_frame.astype(np.float32) + noise, 0, 255).astype(np.uint8)
+                
+            # Calculate Sharpness (No-Reference Metric)
+            gray = cv2.cvtColor(restored_frame, cv2.COLOR_BGR2GRAY)
+            sharpness = np.var(cv2.Laplacian(gray, cv2.CV_64F))
+            sharpness_scores.append(sharpness)
+            
             basename = os.path.basename(f)
             cv2.imwrite(os.path.join(restored_frames_dir, basename), restored_frame)
+
+        if "metadata" not in context:
+            context["metadata"] = {}
+        context["metadata"]["mean_sharpness_score"] = float(np.mean(sharpness_scores)) if sharpness_scores else 0.0
 
         context["frames"]["restored"] = restored_frames_dir
         return context

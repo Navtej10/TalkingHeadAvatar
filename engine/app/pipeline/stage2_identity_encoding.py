@@ -23,18 +23,21 @@ class IdentityEncodingStage(PipelineStage):
     def __init__(self):
         super().__init__()
         self.profile = get_active_profile()
-        provider = 'CPUExecutionProvider' if self.profile.name == 'cpu_dev' else 'CUDAExecutionProvider'
-        
-        try:
-            from insightface.app import FaceAnalysis
-            app = FaceAnalysis(name='buffalo_l', providers=[provider])
-            app.prepare(ctx_id=-1 if provider == 'CPUExecutionProvider' else 0, det_size=(640, 640))
-            self.rec_model = app.models.get('recognition', None)
-            if self.rec_model is None:
-                raise IdentityExtractionError("InsightFace loaded, but 'recognition' model is missing.")
-        except Exception as e:
-            logger.error(f"Failed to initialize InsightFace ArcFace model: {e}")
-            raise IdentityExtractionError(f"Startup validation failed for IdentityEncodingStage: {e}")
+        self.rec_model = None
+
+    def _init_detector(self):
+        if self.rec_model is None:
+            provider = 'CPUExecutionProvider' if self.profile.name == 'cpu_dev' else 'CUDAExecutionProvider'
+            try:
+                from insightface.app import FaceAnalysis
+                app = FaceAnalysis(name='buffalo_l', providers=[provider])
+                app.prepare(ctx_id=-1 if provider == 'CPUExecutionProvider' else 0, det_size=(640, 640))
+                self.rec_model = app.models.get('recognition', None)
+                if self.rec_model is None:
+                    raise IdentityExtractionError("InsightFace loaded, but 'recognition' model is missing.")
+            except Exception as e:
+                logger.error(f"Failed to initialize InsightFace ArcFace model: {e}")
+                raise IdentityExtractionError(f"Startup validation failed for IdentityEncodingStage: {e}")
 
     def run(self, context: dict) -> dict:
         if "identity" in context and "embedding" in context["identity"]:
@@ -66,6 +69,7 @@ class IdentityEncodingStage(PipelineStage):
         aligned_face = face_info["aligned_face"]
 
         # Compute embedding
+        self._init_detector()
         if self.rec_model:
             try:
                 embedding = self.rec_model.get_feat(aligned_face).flatten()

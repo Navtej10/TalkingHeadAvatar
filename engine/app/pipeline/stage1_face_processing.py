@@ -16,11 +16,13 @@ class FaceProcessingStage(PipelineStage):
     def __init__(self):
         super().__init__()
         self.profile = get_active_profile()
-        provider = 'CPUExecutionProvider' if self.profile.name == 'cpu_dev' else 'CUDAExecutionProvider'
-        
-        # Initialize detector once at class-init time
-        self.detector = FaceAnalysis(name='buffalo_l', providers=[provider])
-        self.detector.prepare(ctx_id=-1 if provider == 'CPUExecutionProvider' else 0, det_size=(320, 320))
+        self.detector = None
+
+    def _init_detector(self):
+        if self.detector is None:
+            provider = 'CPUExecutionProvider' if self.profile.name == 'cpu_dev' else 'CUDAExecutionProvider'
+            self.detector = FaceAnalysis(name='buffalo_l', providers=[provider])
+            self.detector.prepare(ctx_id=-1 if provider == 'CPUExecutionProvider' else 0, det_size=(320, 320))
 
     def run(self, context: dict) -> dict:
         image_path = context["image_path"]
@@ -29,6 +31,8 @@ class FaceProcessingStage(PipelineStage):
         img = cv2.imread(image_path)
         if img is None:
             raise ValueError(f"Job {job_id}: Could not read image at {image_path}")
+            
+        self._init_detector()
 
         faces = self.detector.get(img)
         if len(faces) == 0:

@@ -63,52 +63,177 @@ class LipRefinementStage(PipelineStage):
         else:
             x1, y1, x2, y2 = 0, 0, 0, 0
 
-        frame_files = sorted(glob.glob(os.path.join(raw_frames_dir, "*.png")))
-        for f in frame_files:
-            frame = cv2.imread(f)
-            if frame is None:
-                continue
-
-            if landmarks:
-                h, w = frame.shape[:2]
-                bx2 = min(w, x2)
-                by2 = min(h, y2)
-                bx1 = max(0, x1)
-                by1 = max(0, y1)
-
-                if bx2 > bx1 and by2 > by1:
-                    mouth_crop = frame[by1:by2, bx1:bx2]
-                    
-                    # Call refiner (a Phase 1 mock just returns it unchanged)
-                    refined_crop = refiner.refine_mouth(mouth_crop, audio_waveform_path)
-                    
-                    # Composite back using selected blend mode
-                    if refined_crop.shape == mouth_crop.shape:
-                        blend_mode = getattr(profile, "lip_blend_mode", "feather")
-                        if blend_mode == "poisson":
+        max_retries = 2
+        audio_offset_ms = 0.0
+        final_offset = 0.0
+        
+        syncnet = get_model("sync_scorer", "syncnet")
+        eye_refiner = get_model("eye_refinement", "mock_eyegan")
+        
+        for attempt in range(max_retries + 1):
+            asymmetric_frames = 0
+            frame_files = sorted(glob.glob(os.path.join(raw_frames_dir, "*.png")))
+            for f_idx, f in enumerate(frame_files):
+                frame = cv2.imread(f)
+                if frame is None:
+                    continue
+    
+                if landmarks:
+                    h, w = frame.shape[:2]
+                    bx2 = min(w, x2)
+                    by2 = min(h, y2)
+                    bx1 = max(0, x1)
+                    by1 = max(0, y1)
+    
+                    if bx2 > bx1 and by2 > by1:
+                        mouth_crop = frame[by1:by2, bx1:bx2]
+                        
+                        # Extract visemes if available
+                        visemes = None
+                        speech_features = context.get("speech_features")
+                        if isinstance(speech_features, dict):
+                            visemes = speech_features.get("discrete")
+                        
+                        # Call refiner (a Phase 1 mock just returns it unchanged)
+                        # We pass audio_offset_ms to apply the time shift
+                        refined_crop = refiner.refine_mouth(mouth_crop, audio_waveform_path, visemes=visemes, audio_offset_ms=audio_offset_ms)
+                        
+                        # 1. Color Transfer (Reinhard)
+                        def reinhard_color_transfer(src, tgt):
+                            import cv2
                             import numpy as np
-                            center = (bx1 + (bx2 - bx1) // 2, by1 + (by2 - by1) // 2)
-                            mask = 255 * np.ones(refined_crop.shape, refined_crop.dtype)
-                            try:
-                                frame = cv2.seamlessClone(refined_crop, frame, mask, center, cv2.NORMAL_CLONE)
-                            except Exception:
-                                frame[by1:by2, bx1:bx2] = refined_crop
-                        else:
-                            import numpy as np
-                            mask = np.ones((by2 - by1, bx2 - bx1), dtype=np.float32)
-                            # Create a soft feathered edge
-                            mask[0:3, :] = 0; mask[-3:, :] = 0
-                            mask[:, 0:3] = 0; mask[:, -3:] = 0
-                            mask_blur = cv2.GaussianBlur(mask, (15, 15), 0)
-                            mask_blur = np.expand_dims(mask_blur, axis=-1)
+                            src_lab = cv2.cvtColor(src, cv2.COLOR_BGR2LAB).astype(np.float32)
+                            tgt_lab = cv2.cvtColor(tgt, cv2.COLOR_BGR2LAB).astype(np.float32)
                             
-                            frame_crop = frame[by1:by2, bx1:bx2].astype(np.float32)
-                            refined_f = refined_crop.astype(np.float32)
-                            blended = refined_f * mask_blur + frame_crop * (1 - mask_blur)
-                            frame[by1:by2, bx1:bx2] = blended.astype(np.uint8)
-            
-            basename = os.path.basename(f)
-            cv2.imwrite(os.path.join(refined_frames_dir, basename), frame)
+                            src_mean, src_std = cv2.meanStdDev(src_lab)
+                            tgt_mean, tgt_std = cv2.meanStdDev(tgt_lab)
+                            
+                            src_std[src_std == 0] = 1e-5
+                            
+                            out_lab = (src_lab - src_mean.reshape(1,1,3)) * (tgt_std.reshape(1,1,3) / src_std.reshape(1,1,3)) + tgt_mean.reshape(1,1,3)
+                            out_lab = np.clip(out_lab, 0, 255).astype(np.uint8)
+                            return cv2.cvtColor(out_lab, cv2.COLOR_LAB2BGR)
+    
+                        if isinstance(refined_crop, list):
+                            # For simplicity assume single image return from mock or we only handle the first
+                            refined_crop = refined_crop[0] if len(refined_crop) > 0 else mouth_crop
+                            
+                        refined_crop = reinhard_color_transfer(refined_crop, mouth_crop)
+                        
+                        # 2. Get Face Parsing Mask
+                        parser = get_model("face_parsing", "bisenet")
+                        parse_mask_full = parser.parse_face(frame)
+                        parse_crop = parse_mask_full[by1:by2, bx1:bx2]
+                        
+                        # Composite back using selected blend mode
+                        if refined_crop.shape == mouth_crop.shape:
+                            blend_mode = getattr(profile, "lip_blend_mode", "feather")
+                            if blend_mode == "poisson":
+                                import numpy as np
+                                import cv2
+                                center = (bx1 + (bx2 - bx1) // 2, by1 + (by2 - by1) // 2)
+                                
+                                # Hair-aware mask for Poisson
+                                mask = 255 * np.ones(refined_crop.shape[:2], dtype=np.uint8)
+                                mask[parse_crop == 17] = 0
+                                mask = cv2.merge([mask, mask, mask])
+                                
+                                try:
+                                    frame = cv2.seamlessClone(refined_crop, frame, mask, center, cv2.NORMAL_CLONE)
+                                except Exception:
+                                    frame[by1:by2, bx1:bx2] = refined_crop
+                            else:
+                                import numpy as np
+                                import cv2
+                                mask = np.ones((by2 - by1, bx2 - bx1), dtype=np.float32)
+                                # Create a soft feathered edge
+                                mask[0:3, :] = 0; mask[-3:, :] = 0
+                                mask[:, 0:3] = 0; mask[:, -3:] = 0
+                                mask_blur = cv2.GaussianBlur(mask, (15, 15), 0)
+                                
+                                # Hair-aware mask modification
+                                mask_blur[parse_crop == 17] = 0.0
+                                
+                                mask_blur = np.expand_dims(mask_blur, axis=-1)
+                                
+                                frame_crop = frame[by1:by2, bx1:bx2].astype(np.float32)
+                                refined_f = refined_crop.astype(np.float32)
+                                blended = refined_f * mask_blur + frame_crop * (1 - mask_blur)
+                                frame[by1:by2, bx1:bx2] = blended.astype(np.uint8)
 
+                    # 3. Eye Refinement
+                    t_lefteye = transform(landmarks[0])
+                    t_righteye = transform(landmarks[1])
+                    
+                    eye_width = width * 0.4
+                    eye_height = eye_width * 0.5
+                    
+                    def crop_eye(center):
+                        ex1 = max(0, int(center[0] - eye_width / 2))
+                        ey1 = max(0, int(center[1] - eye_height / 2))
+                        ex2 = min(w, int(center[0] + eye_width / 2))
+                        ey2 = min(h, int(center[1] + eye_height / 2))
+                        if ex2 > ex1 and ey2 > ey1:
+                            return frame[ey1:ey2, ex1:ex2], (ex1, ey1, ex2, ey2)
+                        return None, None
+                    
+                    left_eye_crop, l_box = crop_eye(t_lefteye)
+                    right_eye_crop, r_box = crop_eye(t_righteye)
+                    
+                    if left_eye_crop is not None and right_eye_crop is not None:
+                        # Extract blink latent for the current frame
+                        blink_latent = 0.0
+                        if "motion" in context and "latents" in context["motion"]:
+                            motion_latents = context["motion"]["latents"]
+                            if f_idx < len(motion_latents):
+                                blink_latent = motion_latents[f_idx][11, 1]
+                                
+                        refined_left, refined_right = eye_refiner.refine_eyes(left_eye_crop, right_eye_crop, blink_latent)
+                        
+                        import numpy as np
+                        def feather_blend_eye(bg, fg, box):
+                            bx1, by1, bx2, by2 = box
+                            fh, fw = fg.shape[:2]
+                            e_mask = np.ones((fh, fw), dtype=np.float32)
+                            e_mask[0:2, :] = 0; e_mask[-2:, :] = 0
+                            e_mask[:, 0:2] = 0; e_mask[:, -2:] = 0
+                            e_mask_blur = cv2.GaussianBlur(e_mask, (5, 5), 0)
+                            e_mask_blur = np.expand_dims(e_mask_blur, axis=-1)
+                            
+                            bg_crop = bg[by1:by2, bx1:bx2].astype(np.float32)
+                            fg_f = fg.astype(np.float32)
+                            blended = fg_f * e_mask_blur + bg_crop * (1 - e_mask_blur)
+                            bg[by1:by2, bx1:bx2] = blended.astype(np.uint8)
+                            
+                        if refined_left.shape == left_eye_crop.shape:
+                            feather_blend_eye(frame, refined_left, l_box)
+                        if refined_right.shape == right_eye_crop.shape:
+                            feather_blend_eye(frame, refined_right, r_box)
+                            
+                        # 4. Asymmetry Check
+                        # Calculate heuristic asymmetry (vertical difference + some mock deviation)
+                        y_diff = abs(t_lefteye[1] - t_righteye[1])
+                        # If the baseline distance is large, or generated frame deviated:
+                        asym_score = y_diff * (1.0 + np.random.uniform(-0.1, 0.2))
+                        if asym_score > 10.0:
+                            asymmetric_frames += 1
+                
+                basename = os.path.basename(f)
+                cv2.imwrite(os.path.join(refined_frames_dir, basename), frame)
+
+            # Post-check execution
+            final_offset = syncnet.evaluate(refined_frames_dir, audio_waveform_path)
+            
+            if abs(final_offset) > 80.0 and attempt < max_retries:
+                # Apply shift and retry
+                audio_offset_ms -= final_offset # Shift in opposite direction of offset
+                continue
+            else:
+                break
+
+        if "metadata" not in context:
+            context["metadata"] = {}
+        context["metadata"]["sync_offset_ms"] = final_offset
+        context["metadata"]["eye_asymmetry_score"] = asymmetric_frames
         context["frames"]["refined"] = refined_frames_dir
         return context

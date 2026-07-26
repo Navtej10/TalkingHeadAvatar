@@ -80,8 +80,17 @@ class MotionPredictionStage(PipelineStage):
             
         latents += base_latent
         
+        continuous_features = None
+        discrete_visemes = None
         if speech_features is not None:
-            energy = np.linalg.norm(speech_features, axis=1)
+            if isinstance(speech_features, dict):
+                continuous_features = speech_features.get("continuous")
+                discrete_visemes = speech_features.get("discrete")
+            else:
+                continuous_features = speech_features
+        
+        if continuous_features is not None:
+            energy = np.linalg.norm(continuous_features, axis=1)
             if energy.max() > 0:
                 energy = (energy - energy.min()) / (energy.max() - energy.min())
             
@@ -100,12 +109,47 @@ class MotionPredictionStage(PipelineStage):
         latents[:, 2, 0] += pitch_bob
         latents[:, 2, 1] += yaw_sway
         
-        blink_prob = 1.0 / (4.0 * target_fps)
-        is_blink = np.random.rand(num_frames) < blink_prob
-        blink_filter = np.array([0.5, 1.0, 0.5])
-        blink_signal = np.convolve(is_blink.astype(float), blink_filter, mode='same')
-        blink_signal = np.clip(blink_signal, 0, 1)
+        # Apply discrete viseme conditioning
+        if discrete_visemes is not None and len(discrete_visemes) == num_frames:
+            # 1: bilabial, 2: labiodental, 3: open vowel, 4: rounded vowel
+            for i in range(num_frames):
+                v = discrete_visemes[i]
+                if v == 1:
+                    # Bilabial closure: reduce jaw drop, close lips
+                    latents[i, 14, 1] -= 0.5  # example: mouth closure
+                elif v == 3:
+                    # Open vowel: increase jaw drop
+                    latents[i, 17, 1] += 0.8  # example: jaw drop
+                elif v == 4:
+                    # Rounded vowel: pucker lips
+                    latents[i, 14, 0] += 0.5  # example: lip pucker
         
+        # Realistic Blink Generation
+        # Average 15-20 blinks per minute (one blink every ~3-4 seconds)
+        # Duration: ~100-400ms
+        blink_signal = np.zeros(num_frames)
+        current_frame = int(target_fps * np.random.uniform(0.5, 2.0)) # initial offset
+        
+        while current_frame < num_frames:
+            # Duration in frames (100ms - 400ms)
+            duration_ms = np.random.uniform(100, 400)
+            duration_frames = int((duration_ms / 1000.0) * target_fps)
+            if duration_frames < 2:
+                duration_frames = 2
+                
+            end_frame = min(current_frame + duration_frames, num_frames)
+            actual_duration = end_frame - current_frame
+            
+            if actual_duration > 0:
+                # Eased curve: sin^2 over the blink duration
+                t_blink = np.linspace(0, np.pi, actual_duration)
+                curve = np.sin(t_blink) ** 2
+                blink_signal[current_frame:end_frame] = curve
+                
+            # Next blink after 2.0 to 5.0 seconds
+            interval_frames = int(target_fps * np.random.uniform(2.0, 5.0))
+            current_frame += duration_frames + interval_frames
+            
         latents[:, 11, 1] += blink_signal * 0.8
         
         latents += np.random.randn(*latents.shape) * 1e-4

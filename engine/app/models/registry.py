@@ -666,6 +666,70 @@ def load_rife():
     return RIFEWrapper()
 
 
+def load_bisenet():
+    import torch
+    import numpy as np
+    from app.config import get_active_profile
+    
+    class BiSeNetWrapper:
+        def __init__(self):
+            self.profile = get_active_profile()
+            self.device = torch.device(self.profile.device)
+            
+        def parse_face(self, img):
+            # img: BGR numpy array
+            # returns a segmentation mask of same shape (H, W) with class integers
+            # Standard classes: 1: skin, 11: mouth, 12: u_lip, 13: l_lip, 17: hair (and often beard)
+            h, w = img.shape[:2]
+            mask = np.ones((h, w), dtype=np.uint8) # Default to skin
+            
+            # Simple mock heuristic for hair/beard (top edge and bottom edge)
+            mask[:int(h * 0.1), :] = 17
+            mask[int(h * 0.9):, :] = 17 
+            return mask
+
+    return BiSeNetWrapper()
+
+
+def load_syncnet():
+    import torch
+    from app.config import get_active_profile
+    
+    class SyncNetWrapper:
+        def __init__(self):
+            self.profile = get_active_profile()
+            self.device = torch.device(self.profile.device)
+            
+        def evaluate(self, video_frames_dir, audio_path):
+            # True SyncNet evaluates 5-frame video windows against 0.2s audio windows
+            # and computes cross-correlation to find the time offset with highest confidence.
+            # Positive offset = video leads audio. Negative = video lags audio.
+            # Mock behavior for Phase 1: return 0.0 offset.
+            return 0.0
+
+    return SyncNetWrapper()
+
+
+def load_mock_eyegan():
+    import torch
+    import cv2
+    import numpy as np
+    from app.config import get_active_profile
+    
+    class MockEyeGANWrapper:
+        def __init__(self):
+            self.profile = get_active_profile()
+            self.device = torch.device(self.profile.device)
+            
+        def refine_eyes(self, left_eye_crop, right_eye_crop, blink_latent):
+            # In a real implementation, this would enforce eyelid closure based on the blink latent
+            # and fix any waxy/melted textures using an Eye GAN.
+            # Mock behavior: return crops unchanged, or apply a slight mock adjustment
+            return left_eye_crop, right_eye_crop
+
+    return MockEyeGANWrapper()
+
+
 REGISTRY: dict[str, dict[str, callable]] = {
     "face_processing": {
         # "mediapipe": load_mediapipe,
@@ -693,6 +757,15 @@ REGISTRY: dict[str, dict[str, callable]] = {
     },
     "frame_interpolation": {
         "rife": load_rife,
+    },
+    "face_parsing": {
+        "bisenet": load_bisenet,
+    },
+    "sync_scorer": {
+        "syncnet": load_syncnet,
+    },
+    "eye_refinement": {
+        "mock_eyegan": load_mock_eyegan,
     },
 }
 

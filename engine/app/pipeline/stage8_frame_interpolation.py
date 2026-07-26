@@ -16,10 +16,11 @@ class FrameInterpolationStage(PipelineStage):
     def __init__(self):
         super().__init__()
         self.profile = get_active_profile()
-        if self.profile.enable_interpolation:
+        self.interpolator = None
+
+    def _init_interpolator(self):
+        if self.interpolator is None and self.profile.enable_interpolation:
             self.interpolator = get_model("frame_interpolation", "rife")
-        else:
-            self.interpolator = None
 
     def run(self, context: dict) -> dict:
         if not self.profile.enable_interpolation:
@@ -35,6 +36,8 @@ class FrameInterpolationStage(PipelineStage):
                            
         if not input_frames_dir:
             raise ValueError(f"Job {job_id}: No frames available for frame interpolation.")
+            
+        self._init_interpolator()
 
         interpolated_frames_dir = f"{TMP_DIR}/{job_id}/frames_interpolated"
         os.makedirs(interpolated_frames_dir, exist_ok=True)
