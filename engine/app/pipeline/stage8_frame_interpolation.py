@@ -64,18 +64,18 @@ class FrameInterpolationStage(PipelineStage):
                 img0 = cv2.imread(img0_path)
                 img1 = cv2.imread(img1_path)
                 
-                cv2.imwrite(os.path.join(interpolated_frames_dir, f"{output_idx:06d}.png"), img0)
+                cv2.imwrite(os.path.join(interpolated_frames_dir, f"frame_{output_idx:04d}.png"), img0)
                 output_idx += 1
                 
                 for step in range(1, num_intermediate + 1):
                     t = step / (num_intermediate + 1)
                     mid_img = self.interpolator.interpolate(img0, img1, t)
-                    cv2.imwrite(os.path.join(interpolated_frames_dir, f"{output_idx:06d}.png"), mid_img)
+                    cv2.imwrite(os.path.join(interpolated_frames_dir, f"frame_{output_idx:04d}.png"), mid_img)
                     output_idx += 1
             
             if frames:
                 last_img = cv2.imread(os.path.join(input_frames_dir, frames[-1]))
-                cv2.imwrite(os.path.join(interpolated_frames_dir, f"{output_idx:06d}.png"), last_img)
+                cv2.imwrite(os.path.join(interpolated_frames_dir, f"frame_{output_idx:04d}.png"), last_img)
 
         context["frames"]["interpolated"] = interpolated_frames_dir
         return context

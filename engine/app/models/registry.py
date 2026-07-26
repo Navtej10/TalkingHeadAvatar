@@ -503,38 +503,72 @@ def load_liveportrait():
                     # fallback if kp directly needs tweaking
                     if 'kp' in driving_keypoints_info:
                         driving_keypoints_info['kp'] = driving_keypoints_info['kp'] + 0.05
+                        
+                    warp_out = self.models["warping_module"](
+                        source_features, 
+                        kp_source=source_keypoints_info['kp'], 
+                        kp_driving=driving_keypoints_info['kp']
+                    )
+                    out_tensor = self.models["spade_generator"](feature=warp_out['out'])
+                    out_img = out_tensor.squeeze(0).permute(1, 2, 0).cpu().float().numpy()
+                    out_img = np.clip(out_img * 255, 0, 255).astype(np.uint8)
+                    out_img = cv2.cvtColor(out_img, cv2.COLOR_RGB2BGR)
+                    
+                    duration = 1.0
+                    num_frames = int(duration * self.profile.target_fps)
+                    if num_frames == 0:
+                        num_frames = self.profile.target_fps
+                    return [out_img for _ in range(num_frames)]
+                
                 else:
-                    if isinstance(motion, np.ndarray):
-                        motion_tensor = cv2.cvtColor(motion, cv2.COLOR_BGR2RGB)
-                        motion_tensor = torch.from_numpy(motion_tensor).float() / 255.0
-                        motion_tensor = motion_tensor.permute(2, 0, 1).unsqueeze(0).to(self.device, dtype=self.dtype)
-                        driving_keypoints_info = process_kp_info(self.models["motion_extractor"](motion_tensor))
+                    if isinstance(motion, list):
+                        out_frames = []
+                        for m_latent in motion:
+                            driving_kp = source_keypoints_info['kp'].clone()
+                            if isinstance(m_latent, np.ndarray) and m_latent.shape == (21, 3):
+                                delta = torch.from_numpy(m_latent).float().unsqueeze(0).to(self.device, dtype=self.dtype)
+                                driving_kp = driving_kp + delta
+                            elif isinstance(m_latent, np.ndarray):
+                                motion_tensor = cv2.cvtColor(m_latent, cv2.COLOR_BGR2RGB)
+                                motion_tensor = torch.from_numpy(motion_tensor).float() / 255.0
+                                motion_tensor = motion_tensor.permute(2, 0, 1).unsqueeze(0).to(self.device, dtype=self.dtype)
+                                d_info = process_kp_info(self.models["motion_extractor"](motion_tensor))
+                                driving_kp = d_info['kp']
+                            
+                            warp_out = self.models["warping_module"](
+                                source_features, 
+                                kp_source=source_keypoints_info['kp'], 
+                                kp_driving=driving_kp
+                            )
+                            out_tensor = self.models["spade_generator"](feature=warp_out['out'])
+                            out_img = out_tensor.squeeze(0).permute(1, 2, 0).cpu().float().numpy()
+                            out_img = np.clip(out_img * 255, 0, 255).astype(np.uint8)
+                            out_img = cv2.cvtColor(out_img, cv2.COLOR_RGB2BGR)
+                            out_frames.append(out_img)
+                        return out_frames
                     else:
-                        driving_keypoints_info = source_keypoints_info
-                
-                # Warp
-                warp_out = self.models["warping_module"](
-                    source_features, 
-                    kp_source=source_keypoints_info['kp'], 
-                    kp_driving=driving_keypoints_info['kp']
-                )
-                
-                # Generate
-                out_tensor = self.models["spade_generator"](
-                    feature=warp_out['out']
-                )
-                
-            # Convert back to numpy
-            out_img = out_tensor.squeeze(0).permute(1, 2, 0).cpu().float().numpy()
-            out_img = np.clip(out_img * 255, 0, 255).astype(np.uint8)
-            out_img = cv2.cvtColor(out_img, cv2.COLOR_RGB2BGR)
-            
-            duration = 1.0
-            num_frames = int(duration * self.profile.target_fps)
-            if num_frames == 0:
-                num_frames = self.profile.target_fps
-                
-            return [out_img for _ in range(num_frames)]
+                        # Fallback for single image motion
+                        if isinstance(motion, np.ndarray):
+                            motion_tensor = cv2.cvtColor(motion, cv2.COLOR_BGR2RGB)
+                            motion_tensor = torch.from_numpy(motion_tensor).float() / 255.0
+                            motion_tensor = motion_tensor.permute(2, 0, 1).unsqueeze(0).to(self.device, dtype=self.dtype)
+                            driving_keypoints_info = process_kp_info(self.models["motion_extractor"](motion_tensor))
+                        else:
+                            driving_keypoints_info = source_keypoints_info
+                            
+                        warp_out = self.models["warping_module"](
+                            source_features, 
+                            kp_source=source_keypoints_info['kp'], 
+                            kp_driving=driving_keypoints_info['kp']
+                        )
+                        out_tensor = self.models["spade_generator"](feature=warp_out['out'])
+                        out_img = out_tensor.squeeze(0).permute(1, 2, 0).cpu().float().numpy()
+                        out_img = np.clip(out_img * 255, 0, 255).astype(np.uint8)
+                        out_img = cv2.cvtColor(out_img, cv2.COLOR_RGB2BGR)
+                        
+                        duration = 1.0
+                        num_frames = int(duration * self.profile.target_fps)
+                        return [out_img for _ in range(num_frames)]
             
     return LivePortraitWrapper()
 

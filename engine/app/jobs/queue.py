@@ -13,6 +13,8 @@ from app.config import REDIS_URL
 
 SYNCHRONOUS = True
 
+_MOCK_JOBS = {}
+
 # Setup redis connection and RQ queue
 redis_conn = None
 queue = None
@@ -22,7 +24,15 @@ if not SYNCHRONOUS:
 
 def _run_and_deduct_task(job_id: str, api_key: str, **kwargs):
     """Wrapper to execute pipeline and deduct credits on success."""
-    result = run_pipeline(job_id, **kwargs)
+    _MOCK_JOBS[job_id] = "running"
+    try:
+        result = run_pipeline(job_id, **kwargs)
+        _MOCK_JOBS[job_id] = "done"
+    except Exception as e:
+        _MOCK_JOBS[job_id] = "failed"
+        import traceback
+        traceback.print_exc()
+        raise e
     
     # Deduct credit if successful
     if api_key:
@@ -41,8 +51,19 @@ def _run_and_deduct_task(job_id: str, api_key: str, **kwargs):
 
 def enqueue_job(job_id: str, image: Optional[str], audio: Optional[str], text: Optional[str], identity_name: Optional[str] = None, emotion: str = "neutral", gaze_target: str = "camera", api_key: str = None) -> str:
     if SYNCHRONOUS:
+        import threading
+        _MOCK_JOBS[job_id] = "queued"
         # Fallback for synchronous execution if explicitly flipped back
-        _run_and_deduct_task(job_id, api_key, image=image, audio=audio, text=text, identity_name=identity_name, emotion=emotion, gaze_target=gaze_target)
+        thread = threading.Thread(target=_run_and_deduct_task, args=(job_id, api_key), kwargs={
+            "image": image,
+            "audio": audio,
+            "text": text,
+            "identity_name": identity_name,
+            "emotion": emotion,
+            "gaze_target": gaze_target
+        })
+        thread.daemon = True
+        thread.start()
     else:
         # Push to RQ queue
         queue.enqueue(
@@ -67,18 +88,12 @@ def get_job_status(job_id: str) -> dict:
     from rq.exceptions import NoSuchJobError
     
     if SYNCHRONOUS:
-        # We don't support status querying in synchronous mode well since it blocks, 
-        # but mock it for testing if it gets here.
-        import os
-        from app.config import OUTPUT_DIR
-        
-        # Check if output exists to correctly map status
-        output_exists = os.path.exists(f"{OUTPUT_DIR}/{job_id}.mp4")
+        status = _MOCK_JOBS.get(job_id, "failed")
         return {
             "job_id": job_id, 
-            "status": "done" if output_exists else "failed",
-            "result_url": f"/output/{job_id}.mp4" if output_exists else None,
-            "error": "Pipeline failed to produce output" if not output_exists else None
+            "status": status,
+            "result_url": f"/output/{job_id}.mp4" if status == "done" else None,
+            "error": "Pipeline failed to produce output" if status == "failed" else None
         }
         
     try:

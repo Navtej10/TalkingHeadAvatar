@@ -28,7 +28,7 @@ class IdentityEncodingStage(PipelineStage):
         try:
             from insightface.app import FaceAnalysis
             app = FaceAnalysis(name='buffalo_l', providers=[provider])
-            app.prepare(ctx_id=0, det_size=(640, 640))
+            app.prepare(ctx_id=-1 if provider == 'CPUExecutionProvider' else 0, det_size=(640, 640))
             self.rec_model = app.models.get('recognition', None)
             if self.rec_model is None:
                 raise IdentityExtractionError("InsightFace loaded, but 'recognition' model is missing.")
