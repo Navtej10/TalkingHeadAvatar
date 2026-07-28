@@ -94,13 +94,30 @@ class AudioEncodingStage(PipelineStage):
         global _W2V2_PROCESSOR, _W2V2_MODEL
         # We also add CTC model for discrete viseme mapping
         if _W2V2_PROCESSOR is None or _W2V2_MODEL is None or getattr(self, '_ctc_model', None) is None:
-            try:
-                from transformers import Wav2Vec2Processor, Wav2Vec2Model, Wav2Vec2ForCTC
-                _W2V2_PROCESSOR = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
-                _W2V2_MODEL = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base-960h")
-                self._ctc_model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-base-960h")
-            except Exception as e:
-                raise RuntimeError(f"Failed to load Wav2Vec2 model: {e}")
+            import time
+            from huggingface_hub.utils import HfHubHTTPError
+            
+            max_retries = 3
+            backoff_factor = 5
+            
+            hf_token = os.environ.get("HF_TOKEN")
+            
+            for attempt in range(max_retries + 1):
+                try:
+                    from transformers import Wav2Vec2Processor, Wav2Vec2Model, Wav2Vec2ForCTC
+                    _W2V2_PROCESSOR = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h", token=hf_token)
+                    _W2V2_MODEL = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base-960h", token=hf_token)
+                    self._ctc_model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-base-960h", token=hf_token)
+                    break # Success
+                except Exception as e:
+                    # Check if it's a 429
+                    is_429 = "429" in str(e) or (isinstance(e, HfHubHTTPError) and e.response.status_code == 429)
+                    if is_429 and attempt < max_retries:
+                        sleep_time = backoff_factor * (2 ** attempt)
+                        print(f"HuggingFace rate limit (429) hit. Retrying in {sleep_time}s...")
+                        time.sleep(sleep_time)
+                    else:
+                        raise RuntimeError(f"Failed to load Wav2Vec2 model: {e}")
                 
         device = torch.device(self.profile.device)
         dtype = torch.float16 if "cuda" in str(device).lower() else torch.float32

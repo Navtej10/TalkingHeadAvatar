@@ -38,7 +38,10 @@ STAGES = [
 def run_pipeline(job_id: str, image: Optional[str]=None, audio: Optional[str]=None, text: Optional[str]=None, identity_name: Optional[str]=None, emotion: str="neutral", gaze_target: str="camera") -> str:
     import os
     from app.core.identity_store import load_identity
+    from app.models.validation import validate_all_checkpoints
     import cv2
+
+    validate_all_checkpoints()
 
     os.makedirs(INPUT_DIR, exist_ok=True)
     os.makedirs(f"{TMP_DIR}/{job_id}", exist_ok=True)

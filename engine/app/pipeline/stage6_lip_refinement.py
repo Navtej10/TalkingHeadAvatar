@@ -68,7 +68,6 @@ class LipRefinementStage(PipelineStage):
         final_offset = 0.0
         
         syncnet = get_model("sync_scorer", "syncnet")
-        eye_refiner = get_model("eye_refinement", "mock_eyegan")
         
         for attempt in range(max_retries + 1):
             asymmetric_frames = 0
@@ -175,40 +174,16 @@ class LipRefinementStage(PipelineStage):
                         ey2 = min(h, int(center[1] + eye_height / 2))
                         if ex2 > ex1 and ey2 > ey1:
                             return frame[ey1:ey2, ex1:ex2], (ex1, ey1, ex2, ey2)
-                        return None, None
+                        raise ValueError(f"Failed to crop eye at center {center}. Out of bounds.")
                     
                     left_eye_crop, l_box = crop_eye(t_lefteye)
                     right_eye_crop, r_box = crop_eye(t_righteye)
                     
                     if left_eye_crop is not None and right_eye_crop is not None:
-                        # Extract blink latent for the current frame
-                        blink_latent = 0.0
-                        if "motion" in context and "latents" in context["motion"]:
-                            motion_latents = context["motion"]["latents"]
-                            if f_idx < len(motion_latents):
-                                blink_latent = motion_latents[f_idx][11, 1]
-                                
-                        refined_left, refined_right = eye_refiner.refine_eyes(left_eye_crop, right_eye_crop, blink_latent)
-                        
-                        import numpy as np
-                        def feather_blend_eye(bg, fg, box):
-                            bx1, by1, bx2, by2 = box
-                            fh, fw = fg.shape[:2]
-                            e_mask = np.ones((fh, fw), dtype=np.float32)
-                            e_mask[0:2, :] = 0; e_mask[-2:, :] = 0
-                            e_mask[:, 0:2] = 0; e_mask[:, -2:] = 0
-                            e_mask_blur = cv2.GaussianBlur(e_mask, (5, 5), 0)
-                            e_mask_blur = np.expand_dims(e_mask_blur, axis=-1)
+                        # Eye GAN has been removed entirely per instructions.
+                        # No fallback is provided.
+                        pass
                             
-                            bg_crop = bg[by1:by2, bx1:bx2].astype(np.float32)
-                            fg_f = fg.astype(np.float32)
-                            blended = fg_f * e_mask_blur + bg_crop * (1 - e_mask_blur)
-                            bg[by1:by2, bx1:bx2] = blended.astype(np.uint8)
-                            
-                        if refined_left.shape == left_eye_crop.shape:
-                            feather_blend_eye(frame, refined_left, l_box)
-                        if refined_right.shape == right_eye_crop.shape:
-                            feather_blend_eye(frame, refined_right, r_box)
                             
                         # 4. Asymmetry Check
                         # Calculate heuristic asymmetry (vertical difference + some mock deviation)
