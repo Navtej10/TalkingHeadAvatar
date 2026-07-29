@@ -61,10 +61,14 @@ MODELS_DB = {
         "instructions": "wget -c https://huggingface.co/TencentARC/MuseTalk/resolve/main/musetalk/audio_projector.pth -O models_cache/musetalk/weights/audio_projector.pth"
     },
     "Wav2Lip": {
-        "url": "https://iiitaphyd-my.sharepoint.com/:u:/g/personal/radhika_seth_research_iiit_ac_in/Eb3LEzbfuIlCgK5W4X_U9-UBXjFmZ_4jXyN7aZl-3c8AOA?e=O5T9mS",
+        "url": "https://huggingface.co/numz/wav2lip_studio/resolve/main/Wav2lip/wav2lip.pth?download=true",
         "path": "wav2lip/weights/wav2lip.pth",
-        "auto_download": False,
-        "instructions": "Download wav2lip.pth manually from official repo links and place it at models_cache/wav2lip/weights/wav2lip.pth"
+        "auto_download": True
+    },
+    "SyncNet_v2": {
+        "url": "https://huggingface.co/ByteDance/LatentSync-1.6/resolve/main/auxiliary/syncnet_v2.model?download=true",
+        "path": "syncnet/weights/syncnet_v2.model",
+        "auto_download": True
     },
     "CodeFormer": {
         "url": "https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer.pth",

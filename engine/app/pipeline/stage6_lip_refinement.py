@@ -11,6 +11,7 @@ from app.models.registry import get_model
 import os
 import cv2
 import glob
+import numpy as np
 
 
 class LipRefinementStage(PipelineStage):
@@ -72,7 +73,10 @@ class LipRefinementStage(PipelineStage):
         for attempt in range(max_retries + 1):
             asymmetric_frames = 0
             frame_files = sorted(glob.glob(os.path.join(raw_frames_dir, "*.png")))
+            total_frames = len(frame_files)
             for f_idx, f in enumerate(frame_files):
+                if f_idx > 0 and f_idx % 10 == 0:
+                    print(f"[lip_refinement] processed {f_idx}/{total_frames} frames (attempt {attempt + 1}/{max_retries + 1})")
                 frame = cv2.imread(f)
                 if frame is None:
                     continue
@@ -92,15 +96,14 @@ class LipRefinementStage(PipelineStage):
                         speech_features = context.get("speech_features")
                         if isinstance(speech_features, dict):
                             visemes = speech_features.get("discrete")
-                        
-                        # Call refiner (a Phase 1 mock just returns it unchanged)
-                        # We pass audio_offset_ms to apply the time shift
-                        refined_crop = refiner.refine_mouth(mouth_crop, audio_waveform_path, visemes=visemes, audio_offset_ms=audio_offset_ms)
+                        # Call refiner
+                        # The real models (Wav2Lip/MuseTalk) don't use discrete visemes or audio_offset_ms,
+                        # so we remove those unused kwargs cleanly.
+                        refined_crop = refiner.refine_mouth(mouth_crop, audio_waveform_path)
                         
                         # 1. Color Transfer (Reinhard)
                         def reinhard_color_transfer(src, tgt):
                             import cv2
-                            import numpy as np
                             src_lab = cv2.cvtColor(src, cv2.COLOR_BGR2LAB).astype(np.float32)
                             tgt_lab = cv2.cvtColor(tgt, cv2.COLOR_BGR2LAB).astype(np.float32)
                             
@@ -128,8 +131,6 @@ class LipRefinementStage(PipelineStage):
                         if refined_crop.shape == mouth_crop.shape:
                             blend_mode = getattr(profile, "lip_blend_mode", "feather")
                             if blend_mode == "poisson":
-                                import numpy as np
-                                import cv2
                                 center = (bx1 + (bx2 - bx1) // 2, by1 + (by2 - by1) // 2)
                                 
                                 # Hair-aware mask for Poisson
@@ -142,8 +143,6 @@ class LipRefinementStage(PipelineStage):
                                 except Exception:
                                     frame[by1:by2, bx1:bx2] = refined_crop
                             else:
-                                import numpy as np
-                                import cv2
                                 mask = np.ones((by2 - by1, bx2 - bx1), dtype=np.float32)
                                 # Create a soft feathered edge
                                 mask[0:3, :] = 0; mask[-3:, :] = 0
@@ -159,39 +158,6 @@ class LipRefinementStage(PipelineStage):
                                 refined_f = refined_crop.astype(np.float32)
                                 blended = refined_f * mask_blur + frame_crop * (1 - mask_blur)
                                 frame[by1:by2, bx1:bx2] = blended.astype(np.uint8)
-
-                    # 3. Eye Refinement
-                    t_lefteye = transform(landmarks[0])
-                    t_righteye = transform(landmarks[1])
-                    
-                    eye_width = width * 0.4
-                    eye_height = eye_width * 0.5
-                    
-                    def crop_eye(center):
-                        ex1 = max(0, int(center[0] - eye_width / 2))
-                        ey1 = max(0, int(center[1] - eye_height / 2))
-                        ex2 = min(w, int(center[0] + eye_width / 2))
-                        ey2 = min(h, int(center[1] + eye_height / 2))
-                        if ex2 > ex1 and ey2 > ey1:
-                            return frame[ey1:ey2, ex1:ex2], (ex1, ey1, ex2, ey2)
-                        raise ValueError(f"Failed to crop eye at center {center}. Out of bounds.")
-                    
-                    left_eye_crop, l_box = crop_eye(t_lefteye)
-                    right_eye_crop, r_box = crop_eye(t_righteye)
-                    
-                    if left_eye_crop is not None and right_eye_crop is not None:
-                        # Eye GAN has been removed entirely per instructions.
-                        # No fallback is provided.
-                        pass
-                            
-                            
-                        # 4. Asymmetry Check
-                        # Calculate heuristic asymmetry (vertical difference + some mock deviation)
-                        y_diff = abs(t_lefteye[1] - t_righteye[1])
-                        # If the baseline distance is large, or generated frame deviated:
-                        asym_score = y_diff * (1.0 + np.random.uniform(-0.1, 0.2))
-                        if asym_score > 10.0:
-                            asymmetric_frames += 1
                 
                 basename = os.path.basename(f)
                 cv2.imwrite(os.path.join(refined_frames_dir, basename), frame)

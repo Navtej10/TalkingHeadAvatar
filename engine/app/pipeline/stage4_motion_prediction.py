@@ -1,14 +1,24 @@
 """
-Stage 4 - Motion Prediction
-Predict a latent motion representation (blink, gaze, jaw, head/neck sway)
-from identity + speech features, to be decoded into animation by Stage 5.
+Stage 4 - Audio-to-Motion Prediction
 
-Often bundled with the generator itself (e.g. LivePortrait computes motion
-and generation together) — if so, this stage can become a thin pass-through
-that just prepares inputs for stage5.
+Converts audio features (produced by Stage 3) into a per-frame sequence of
+LivePortrait keypoint deltas (shape: [21, 3] per frame).
+
+This completely removes the driving-video dependency that was causing the
+distorted/melted-face artefacts.  All motion is derived from the audio signal:
+
+  - Jaw open/close  ← mel-spectrogram energy per frame
+  - Jaw shape       ← viseme class (0-4) from Wav2Vec2 CTC phoneme output
+  - Eye blinks      ← biologically-realistic Poisson-distributed timing
+  - Brow motion     ← prosodic stress peaks
+  - Head sway       ← low-frequency sinusoidal + smoothed noise (no driving video)
+
+Output put into context:
+    context["motion"]["latents"] = List[np.ndarray shape (21,3)]
 """
 from app.pipeline.base import PipelineStage
 from app.config import get_active_profile
+import os
 
 
 class MotionPredictionStage(PipelineStage):
@@ -16,75 +26,48 @@ class MotionPredictionStage(PipelineStage):
 
     def run(self, context: dict) -> dict:
         profile = get_active_profile()
-        
-        # If disabled for this profile, just pass through
+
         if not profile.enable_motion_latents:
             return context
 
         audio_path = context["audio"]["waveform_path"]
+        speech_features = context.get("speech_features", {})
 
-        # Calculate duration of the audio to match frames
+        # ── Determine frame count from audio duration ──────────────────────────
         import ffmpeg
         try:
             probe = ffmpeg.probe(audio_path)
-            audio_stream = next((s for s in probe['streams'] if s['codec_type'] == 'audio'), None)
-            duration = float(audio_stream['duration']) if audio_stream else 0.0
+            audio_stream = next(
+                (s for s in probe["streams"] if s["codec_type"] == "audio"), None
+            )
+            duration = float(audio_stream["duration"]) if audio_stream else 1.0
         except Exception:
-            duration = 1.0  # fallback
-            
-        num_frames = int(duration * profile.target_fps)
-        if num_frames == 0:
-            num_frames = 1
-            
-        driving_video_path = context.get("driving_video_path")
-        if not driving_video_path:
-            # Fallback to a test video for now
-            import os
-            driving_video_path = os.path.abspath(os.path.join(
-                os.path.dirname(__file__), 
-                "../../../data/input/demo_vid.mp4"
-            ))
-            
-        motion_latents = self._extract_driving_video_frames(
-            video_path=driving_video_path,
-            num_frames=num_frames
+            duration = 1.0
+
+        num_frames = max(1, int(duration * profile.target_fps))
+
+        # ── Generate audio-driven keypoint deltas ──────────────────────────────
+        from app.models.audio_to_motion import audio_to_motion_deltas
+
+        job_id = context.get("job_id", "unknown")
+        # Use job_id hash as seed for reproducibility within a job
+        seed = int.from_bytes(job_id.encode()[:4].ljust(4, b"\x00"), "big") % (2 ** 31)
+
+        motion_latents = audio_to_motion_deltas(
+            audio_waveform_path=audio_path,
+            speech_features=speech_features,
+            num_frames=num_frames,
+            fps=profile.target_fps,
+            seed=seed,
         )
 
         if "motion" not in context:
             context["motion"] = {}
         context["motion"]["latents"] = motion_latents
-        
-        return context
 
-    def _extract_driving_video_frames(self, video_path: str, num_frames: int):
-        import cv2
-        import numpy as np
-        
-        cap = cv2.VideoCapture(video_path)
-        frames = []
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            # LivePortrait's motion_extractor expects 256x256 frames
-            frame_resized = cv2.resize(frame, (256, 256))
-            frames.append(frame_resized)
-        cap.release()
-        
-        if not frames:
-            raise ValueError(f"Could not read any frames from driving video: {video_path}")
-            
-        # Reconcile length with audio duration (num_frames) by ping-pong looping the video
-        # This prevents sharp, continuous looping/jumping at the end of the video.
-        matched_frames = []
-        n = len(frames)
-        for i in range(num_frames):
-            if n == 1:
-                idx = 0
-            else:
-                cycle_len = 2 * (n - 1)
-                pos = i % cycle_len
-                idx = pos if pos < n else cycle_len - pos
-            matched_frames.append(frames[idx])
-            
-        return matched_frames
+        print(
+            f"[motion_prediction] Produced {len(motion_latents)} audio-driven "
+            f"keypoint-delta frames for job {job_id}",
+            flush=True,
+        )
+        return context

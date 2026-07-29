@@ -59,8 +59,11 @@ class FaceRestorationStage(PipelineStage):
 
         sharpness_scores = []
         frame_files = sorted(glob.glob(os.path.join(input_frames_dir, "*.png")))
+        total_frames = len(frame_files)
         
-        for f in frame_files:
+        for f_idx, f in enumerate(frame_files):
+            if f_idx > 0 and f_idx % 10 == 0:
+                print(f"[{self.name}] processed {f_idx}/{total_frames} frames")
             frame = cv2.imread(f)
             if frame is None:
                 continue

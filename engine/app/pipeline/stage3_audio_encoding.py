@@ -3,17 +3,12 @@ Stage 3 - Audio Encoding
 Extract phoneme/prosody/emotion/timing features from speech rather than
 driving the generator with raw waveform.
 
-If `text` is given instead of `audio`, route it through TTS first
-(reuse the existing edge-tts integration from InterviewAI here).
-
 Reference model: Wav2Vec2 / HuBERT
 """
 from app.pipeline.base import PipelineStage
 from app.config import TMP_DIR
 import os
 import asyncio
-import ffmpeg
-import edge_tts
 
 
 _W2V2_PROCESSOR = None
@@ -29,22 +24,18 @@ class AudioEncodingStage(PipelineStage):
 
     def run(self, context: dict) -> dict:
         audio_path = context.get("audio_path")
-        text = context.get("text")
         job_id = context.get("job_id", "unknown")
 
-        if not audio_path and not text:
-            raise ValueError("either audio or text is required")
+        if not audio_path:
+            raise ValueError("audio_path is required for Stage 3")
 
         if "audio" not in context:
             context["audio"] = {}
 
-        from app.core.cache import get_file_hash, get_text_hash, get_cache, set_cache
+        from app.core.cache import get_file_hash, get_cache, set_cache
         cache_key = None
         try:
-            if audio_path:
-                cache_key = f"audio_{get_file_hash(audio_path)}"
-            elif text:
-                cache_key = f"audio_text_{get_text_hash(text)}"
+            cache_key = f"audio_{get_file_hash(audio_path)}"
         except Exception as e:
             print(f"Warning: Failed to generate cache key for audio: {e}")
 
@@ -56,18 +47,7 @@ class AudioEncodingStage(PipelineStage):
                     context["speech_features"] = cached_data["speech_features"]
                     return context
 
-        if audio_path:
-            waveform_path = f"{TMP_DIR}/{job_id}/waveform.wav"
-            try:
-                ffmpeg.input(audio_path).output(waveform_path, ac=1, ar='16k').overwrite_output().run(quiet=True)
-            except ffmpeg.Error as e:
-                raise RuntimeError(f"FFmpeg error: {e.stderr.decode() if e.stderr else str(e)}")
-            context["audio"]["waveform_path"] = waveform_path
-        else:
-            tts_path = f"{TMP_DIR}/{job_id}/tts.wav"
-            self._tts(text, tts_path)
-            context["audio"]["waveform_path"] = tts_path
-
+        context["audio"]["waveform_path"] = audio_path
         context["speech_features"] = self.encode_audio(context["audio"]["waveform_path"])
         
         if cache_key:
@@ -78,13 +58,6 @@ class AudioEncodingStage(PipelineStage):
             
         return context
 
-    def _tts(self, text: str, output_path: str):
-        async def _tts_async():
-            communicate = edge_tts.Communicate(text, "en-US-AriaNeural")
-            await communicate.save(output_path)
-        
-        asyncio.run(_tts_async())
-
     def encode_audio(self, audio_path: str):
         import torch
         import librosa
@@ -94,6 +67,7 @@ class AudioEncodingStage(PipelineStage):
         global _W2V2_PROCESSOR, _W2V2_MODEL
         # We also add CTC model for discrete viseme mapping
         if _W2V2_PROCESSOR is None or _W2V2_MODEL is None or getattr(self, '_ctc_model', None) is None:
+            print("[audio_encoding] Wav2Vec2 model: LOADED FRESH (first use this process)")
             import time
             from huggingface_hub.utils import HfHubHTTPError
             
@@ -118,6 +92,8 @@ class AudioEncodingStage(PipelineStage):
                         time.sleep(sleep_time)
                     else:
                         raise RuntimeError(f"Failed to load Wav2Vec2 model: {e}")
+        else:
+            print("[audio_encoding] Wav2Vec2 model: served from cache (already loaded)")
                 
         device = torch.device(self.profile.device)
         dtype = torch.float16 if "cuda" in str(device).lower() else torch.float32
@@ -133,6 +109,15 @@ class AudioEncodingStage(PipelineStage):
             raise RuntimeError(f"Failed to read audio file {audio_path}: {e}")
             
         duration = len(speech) / sr
+        
+        import hashlib
+        try:
+            with open(audio_path, "rb") as f:
+                file_hash = hashlib.md5(f.read()).hexdigest()[:16]
+            print(f"[audio_encoding] Processing audio: path={audio_path}, duration={duration:.2f}s, hash={file_hash}")
+        except Exception as e:
+            print(f"[audio_encoding] Processing audio: path={audio_path}, duration={duration:.2f}s, hash=ERROR({e})")
+            
         target_fps = self.profile.target_fps
         total_frames = int(duration * target_fps)
         if total_frames == 0:

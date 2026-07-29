@@ -59,8 +59,10 @@ class FrameInterpolationStage(PipelineStage):
         else:
             num_intermediate = int(ratio) - 1
             output_idx = 0
-            
+            total_pairs = len(frames) - 1
             for i in range(len(frames) - 1):
+                if i > 0 and i % 10 == 0:
+                    print(f"[{self.name}] processed {i}/{total_pairs} frames")
                 img0_path = os.path.join(input_frames_dir, frames[i])
                 img1_path = os.path.join(input_frames_dir, frames[i+1])
                 

@@ -64,9 +64,25 @@ def create_job(
             
     saved_audio_path = None
     if audio:
-        saved_audio_path = f"{INPUT_DIR}/{job_id}_audio.wav"
-        with open(saved_audio_path, "wb") as f:
+        import ffmpeg
+        temp_audio_path = f"{INPUT_DIR}/{job_id}_audio_raw"
+        with open(temp_audio_path, "wb") as f:
             shutil.copyfileobj(audio.file, f)
+        try:
+            probe = ffmpeg.probe(temp_audio_path)
+            duration_str = probe.get('format', {}).get('duration')
+            if not duration_str or float(duration_str) <= 0:
+                raise ValueError("Audio file is empty or too short.")
+            
+            saved_audio_path = f"{INPUT_DIR}/{job_id}_audio.wav"
+            ffmpeg.input(temp_audio_path).output(saved_audio_path, ac=1, ar='16k', f='wav').overwrite_output().run(quiet=True)
+        except ffmpeg.Error as e:
+            raise HTTPException(status_code=400, detail=f"Invalid or corrupted audio file: {e.stderr.decode() if e.stderr else str(e)}")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Audio validation failed: {str(e)}")
+        finally:
+            if os.path.exists(temp_audio_path):
+                os.remove(temp_audio_path)
 
     # Submit to queue (currently blocks if SYNCHRONOUS=True)
     enqueue_job(job_id, image=saved_image_path, audio=saved_audio_path, text=text, identity_name=identity_name, emotion=emotion, gaze_target=gaze_target, api_key=api_key)

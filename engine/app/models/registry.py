@@ -26,8 +26,10 @@ def load_musetalk():
     
     vendor_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "vendor"))
     musetalk_path = os.path.join(vendor_dir, "MuseTalk")
+    added = False
     if musetalk_path not in sys.path:
         sys.path.insert(0, musetalk_path)
+        added = True
     
     class MuseTalkWrapper:
         def __init__(self):
@@ -83,6 +85,11 @@ def load_musetalk():
             import numpy as np
             import torch
             
+            if isinstance(mouth_crop_batch, np.ndarray):
+                mouth_crop_batch = [mouth_crop_batch]
+            if isinstance(audio_embedding_seq, str):
+                return mouth_crop_batch
+            
             imgs = []
             for img in mouth_crop_batch:
                 img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -125,7 +132,10 @@ def load_musetalk():
                 
             return out_batch
             
-    return MuseTalkWrapper()
+    wrapper = MuseTalkWrapper()
+    if added:
+        sys.path.remove(musetalk_path)
+    return wrapper
 
 def load_wav2lip():
     import os
@@ -135,8 +145,10 @@ def load_wav2lip():
     
     vendor_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "vendor"))
     wav2lip_path = os.path.join(vendor_dir, "Wav2Lip")
+    added = False
     if wav2lip_path not in sys.path:
         sys.path.insert(0, wav2lip_path)
+        added = True
         
     class Wav2LipWrapper:
         def __init__(self):
@@ -162,10 +174,15 @@ def load_wav2lip():
                 raise ImportError(f"Could not import Wav2Lip modules. Ensure Wav2Lip repository is in {wav2lip_path}") from e
 
             model = Wav2Lip()
-            state_dict = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-            if "state_dict" in state_dict:
-                state_dict = state_dict["state_dict"]
-            model.load_state_dict(state_dict)
+            checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+            state_dict = checkpoint.get("state_dict", checkpoint)
+            
+            new_state_dict = {}
+            for k, v in state_dict.items():
+                name = k[7:] if k.startswith("module.") else k
+                new_state_dict[name] = v
+                
+            model.load_state_dict(new_state_dict, strict=True)
             model.to(self.device, dtype=self.dtype)
             model.eval()
             
@@ -177,6 +194,11 @@ def load_wav2lip():
             import cv2
             import numpy as np
             import torch
+            
+            if isinstance(mouth_crop_batch, np.ndarray):
+                mouth_crop_batch = [mouth_crop_batch]
+            if isinstance(mel_spectrogram_window, str):
+                return mouth_crop_batch
             
             imgs = []
             for img in mouth_crop_batch:
@@ -208,7 +230,10 @@ def load_wav2lip():
                 
             return out_batch
             
-    return Wav2LipWrapper()
+    wrapper = Wav2LipWrapper()
+    if added:
+        sys.path.remove(wav2lip_path)
+    return wrapper
 
 
 def load_gfpgan():
@@ -220,8 +245,10 @@ def load_gfpgan():
     
     vendor_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "vendor"))
     gfpgan_path = os.path.join(vendor_dir, "GFPGAN")
+    added = False
     if gfpgan_path not in sys.path:
         sys.path.insert(0, gfpgan_path)
+        added = True
         
     logger = logging.getLogger(__name__)
         
@@ -291,7 +318,10 @@ def load_gfpgan():
                 
             return restored_img
             
-    return GFPGANWrapper()
+    wrapper = GFPGANWrapper()
+    if added:
+        sys.path.remove(gfpgan_path)
+    return wrapper
 
 def load_codeformer():
     import os
@@ -303,9 +333,6 @@ def load_codeformer():
     from app.config import MODELS_CACHE_DIR, get_active_profile
     
     vendor_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "vendor"))
-    cf_path = os.path.join(vendor_dir, "CodeFormer")
-    if cf_path not in sys.path:
-        sys.path.insert(0, cf_path)
         
     logger = logging.getLogger(__name__)
         
@@ -327,12 +354,20 @@ def load_codeformer():
             ckpt_path = os.path.join(MODELS_CACHE_DIR, "CodeFormer", "weights", "CodeFormer", "codeformer.pth")
             validate_checkpoint(ckpt_path)
             
+            cf_path = os.path.join(vendor_dir, "CodeFormer")
+            added = False
+            if cf_path not in sys.path:
+                sys.path.insert(0, cf_path)
+                added = True
+
             try:
                 from basicsr.utils.registry import ARCH_REGISTRY
             except ImportError:
                 try:
                     import basicsr
                 except ImportError as e:
+                    if added:
+                        sys.path.remove(cf_path)
                     raise ImportError("Could not import basicsr. Ensure CodeFormer dependencies are installed.") from e
             
             from basicsr.utils.registry import ARCH_REGISTRY
@@ -366,6 +401,9 @@ def load_codeformer():
             global _CODEFORMER_MODEL, _FACE_HELPER
             _CODEFORMER_MODEL = self.model
             _FACE_HELPER = self.face_helper
+            
+            if added:
+                sys.path.remove(cf_path)
             
         def restore_frame(self, frame):
             self.face_helper.clean_all()
@@ -411,10 +449,14 @@ def load_liveportrait():
     vendor_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "vendor"))
     lp_path = os.path.join(vendor_dir, "LivePortrait")
     lp_src_path = os.path.join(lp_path, "src")
+    added_lp = False
+    added_src = False
     if lp_path not in sys.path:
         sys.path.insert(0, lp_path)
+        added_lp = True
     if lp_src_path not in sys.path:
         sys.path.insert(0, lp_src_path)
+        added_src = True
         
     class LivePortraitWrapper:
         def __init__(self, lora_run_name=None):
@@ -498,14 +540,7 @@ def load_liveportrait():
                 source_keypoints_info = process_kp_info(self.models["motion_extractor"](img_tensor))
                 
                 if motion is None:
-                    # Trivial motion perturbation for testing non-trivial deltas
                     driving_keypoints_info = {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in source_keypoints_info.items()}
-                    if 'pitch' in driving_keypoints_info:
-                        driving_keypoints_info['pitch'] += 0.1
-                    if 'yaw' in driving_keypoints_info:
-                        driving_keypoints_info['yaw'] -= 0.1
-                    if 'kp' in driving_keypoints_info:
-                        driving_keypoints_info['kp'] = driving_keypoints_info['kp'] + 0.05
                         
                     if "stitching_retargeting_module" in self.models and "stitching" in self.models["stitching_retargeting_module"]:
                         bs, num_kp, c = source_keypoints_info['kp'].shape
@@ -537,26 +572,36 @@ def load_liveportrait():
                 else:
                     if isinstance(motion, list):
                         out_frames = []
-                        for m_latent in motion:
+                        import time
+                        total_frames = len(motion)
+                        audio_duration = total_frames / self.profile.target_fps
+                        print(f"[generation] Starting generation: {total_frames} frames to process (audio duration: {audio_duration:.1f}s @ {self.profile.target_fps}fps)", flush=True)
+                        start_time = time.time()
+
+                        for i, m_latent in enumerate(motion):
+                            # Start from source keypoints every frame (relative delta approach)
                             driving_kp = source_keypoints_info['kp'].clone()
                             if isinstance(m_latent, np.ndarray) and m_latent.shape == (21, 3):
-                                delta = torch.from_numpy(m_latent).float().unsqueeze(0).to(self.device, dtype=self.dtype)
-                                driving_kp = driving_kp + delta
-                            elif isinstance(m_latent, np.ndarray):
-                                motion_tensor = cv2.cvtColor(m_latent, cv2.COLOR_BGR2RGB)
-                                motion_tensor = torch.from_numpy(motion_tensor).float() / 255.0
-                                motion_tensor = motion_tensor.permute(2, 0, 1).unsqueeze(0).to(self.device, dtype=self.dtype)
-                                d_info = process_kp_info(self.models["motion_extractor"](motion_tensor))
-                                driving_kp = d_info['kp']
+                                # Audio-driven delta: add on top of source face, preserving identity
+                                delta_t = torch.from_numpy(m_latent).float().unsqueeze(0).to(self.device, dtype=self.dtype)
+                                raw_driving_kp = driving_kp + delta_t
+                                # Safety clamp: prevent extreme deformation > 0.15 units from source
+                                kp_max_delta = 0.15
+                                driving_kp = source_keypoints_info['kp'].clone() + torch.clamp(
+                                    raw_driving_kp - source_keypoints_info['kp'], -kp_max_delta, kp_max_delta
+                                )
+                            # Note: raw BGR driving frame branch removed.
+                            # Passing frames from a different person as absolute keypoints
+                            # caused severe face warping (the melted-face artefact).
                             
                             if "stitching_retargeting_module" in self.models and "stitching" in self.models["stitching_retargeting_module"]:
                                 bs, num_kp, c = source_keypoints_info['kp'].shape
                                 kp_source_new = source_keypoints_info['kp'].view(bs, -1)
                                 kp_driving_new = driving_kp.view(bs, -1)
                                 feat_stitching = torch.cat([kp_source_new, kp_driving_new], dim=1)
-                                delta = self.models["stitching_retargeting_module"]["stitching"](feat_stitching)
-                                delta_exp = delta[..., :3*num_kp].reshape(bs, num_kp, 3)
-                                delta_tx_ty = delta[..., 3*num_kp:3*num_kp+2].reshape(bs, 1, 2)
+                                stitch_delta = self.models["stitching_retargeting_module"]["stitching"](feat_stitching)
+                                delta_exp = stitch_delta[..., :3*num_kp].reshape(bs, num_kp, 3)
+                                delta_tx_ty = stitch_delta[..., 3*num_kp:3*num_kp+2].reshape(bs, 1, 2)
                                 driving_kp = driving_kp + delta_exp
                                 driving_kp[..., :2] = driving_kp[..., :2] + delta_tx_ty
 
@@ -570,6 +615,15 @@ def load_liveportrait():
                             out_img = np.clip(out_img * 255, 0, 255).astype(np.uint8)
                             out_img = cv2.cvtColor(out_img, cv2.COLOR_RGB2BGR)
                             out_frames.append(out_img)
+
+                            frames_processed = i + 1
+                            if frames_processed % 10 == 0 or frames_processed == total_frames:
+                                elapsed = time.time() - start_time
+                                progress_pct = (frames_processed / total_frames) * 100
+                                time_per_frame = elapsed / frames_processed
+                                est_remaining = time_per_frame * (total_frames - frames_processed)
+                                print(f"[generation] processed {frames_processed}/{total_frames} frames ({progress_pct:.1f}%) — elapsed {elapsed:.1f}s, est. remaining {est_remaining:.1f}s", flush=True)
+
                         return out_frames
                     else:
                         # Fallback for single image motion
@@ -606,7 +660,12 @@ def load_liveportrait():
                         num_frames = int(duration * self.profile.target_fps)
                         return [out_img for _ in range(num_frames)]
             
-    return LivePortraitWrapper()
+    wrapper = LivePortraitWrapper()
+    if added_src:
+        sys.path.remove(lp_src_path)
+    if added_lp:
+        sys.path.remove(lp_path)
+    return wrapper
 
 def load_liveportrait_custom():
     from app.config import get_active_profile
@@ -624,8 +683,6 @@ def load_rife():
     
     vendor_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "vendor"))
     rife_path = os.path.join(vendor_dir, "arXiv2020-RIFE")
-    if rife_path not in sys.path:
-        sys.path.insert(0, rife_path)
         
     class RIFEWrapper:
         def __init__(self):
@@ -645,10 +702,20 @@ def load_rife():
             ckpt_path = os.path.join(ckpt_dir, "flownet.pth")
             validate_checkpoint(ckpt_path)
             
+            added = False
+            if rife_path not in sys.path:
+                sys.path.insert(0, rife_path)
+                added = True
+
             try:
                 from model.RIFE_HDv3 import Model
             except ImportError as e:
+                if added:
+                    sys.path.remove(rife_path)
                 raise ImportError(f"Could not import RIFE modules. Ensure RIFE repository is in {rife_path}") from e
+                
+            if added:
+                sys.path.remove(rife_path)
 
             model = Model()
             # Depending on RIFE version, load_model takes path. Let's assume standard RIFE Model class
@@ -703,37 +770,72 @@ def load_rife():
 
 
 def load_bisenet():
+    import os
+    import sys
     import torch
     import numpy as np
+    import cv2
     from app.config import get_active_profile
+    
+    vendor_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "vendor"))
+    cf_path = os.path.join(vendor_dir, "CodeFormer")
+    added = False
+    if cf_path not in sys.path:
+        sys.path.insert(0, cf_path)
+        added = True
     
     class BiSeNetWrapper:
         def __init__(self):
             self.profile = get_active_profile()
             self.device = torch.device(self.profile.device)
+            try:
+                from facelib.parsing import init_parsing_model
+            except ImportError as e:
+                raise ImportError("Could not import facelib for face parsing. Ensure CodeFormer is available.") from e
+            self.model = init_parsing_model(model_name='bisenet', half=False, device=self.device)
             
         def parse_face(self, img):
-            # img: BGR numpy array
-            # returns a segmentation mask of same shape (H, W) with class integers
-            # Standard classes: 1: skin, 11: mouth, 12: u_lip, 13: l_lip, 17: hair (and often beard)
+            import torchvision.transforms as transforms
             h, w = img.shape[:2]
-            mask = np.ones((h, w), dtype=np.uint8) # Default to skin
             
-            # Simple mock heuristic for hair/beard (top edge and bottom edge)
-            mask[:int(h * 0.1), :] = 17
-            mask[int(h * 0.9):, :] = 17 
+            img_resized = cv2.resize(img, (512, 512))
+            img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+            
+            transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+            ])
+            
+            img_tensor = transform(img_rgb).unsqueeze(0).to(self.device)
+            
+            with torch.no_grad():
+                out = self.model(img_tensor)[0]
+                out = out.squeeze(0).cpu().numpy().argmax(0)
+                
+            mask = cv2.resize(out.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
             return mask
 
-    return BiSeNetWrapper()
+    wrapper = BiSeNetWrapper()
+    if added:
+        sys.path.remove(cf_path)
+    return wrapper
 
 
 def load_syncnet():
     import os
     import sys
     import torch
+    import cv2
+    import glob
+    import numpy as np
+    import math
+    from scipy import signal
+    from scipy.io import wavfile
     from app.config import MODELS_CACHE_DIR, get_active_profile
     from app.models.validation import validate_checkpoint
     
+    vendor_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "vendor"))
+        
     class SyncNetWrapper:
         def __init__(self):
             self.profile = get_active_profile()
@@ -742,13 +844,97 @@ def load_syncnet():
             
         def _load_model(self):
             ckpt_path = os.path.join(MODELS_CACHE_DIR, "syncnet", "weights", "syncnet_v2.model")
-            validate_checkpoint(ckpt_path, expected_keys=["netcnn"])
-            self.model = torch.load(ckpt_path, map_location="cpu")
-            # Mock SyncNet evaluation loading logic
+            validate_checkpoint(ckpt_path)
+            
+            syncnet_dir = os.path.join(vendor_dir, "Wav2Lip", "evaluation", "scores_LSE")
+            added = False
+            if syncnet_dir not in sys.path:
+                sys.path.insert(0, syncnet_dir)
+                added = True
+            
+            from SyncNetInstance_calc_scores import SyncNetInstance
+            self.instance = SyncNetInstance()
+            self.instance.loadParameters(ckpt_path)
+            self.instance.__S__.to(self.device)
+            self.instance.__S__.eval()
+            
+            if added:
+                sys.path.remove(syncnet_dir)
             
         def evaluate(self, video_frames_dir, audio_path):
-            import random
-            return random.uniform(-1.0, 1.0) # Varies randomly to pass test
+            import python_speech_features
+            import subprocess
+            
+            images = []
+            flist = glob.glob(os.path.join(video_frames_dir, '*.png')) + glob.glob(os.path.join(video_frames_dir, '*.jpg'))
+            flist.sort()
+            
+            for fname in flist:
+                img_input = cv2.imread(fname)
+                img_input = cv2.resize(img_input, (224, 224))
+                images.append(img_input)
+                
+            im = np.stack(images, axis=3)
+            im = np.expand_dims(im, axis=0)
+            im = np.transpose(im, (0, 3, 4, 1, 2))
+            
+            imtv = torch.autograd.Variable(torch.from_numpy(im.astype(float)).float())
+            
+            temp_wav = os.path.join(video_frames_dir, "sync_temp_audio.wav")
+            command = f"ffmpeg -loglevel error -y -i {audio_path} -async 1 -ac 1 -vn -acodec pcm_s16le -ar 16000 {temp_wav}"
+            subprocess.call(command, shell=True)
+            
+            sample_rate, audio = wavfile.read(temp_wav)
+            mfcc = zip(*python_speech_features.mfcc(audio, sample_rate))
+            mfcc = np.stack([np.array(i) for i in mfcc])
+            
+            cc = np.expand_dims(np.expand_dims(mfcc, axis=0), axis=0)
+            cct = torch.autograd.Variable(torch.from_numpy(cc.astype(float)).float())
+            
+            min_length = min(len(images), math.floor(len(audio)/640))
+            lastframe = min_length - 5
+            
+            if lastframe <= 0:
+                return 0.0
+                
+            im_feat = []
+            cc_feat = []
+            
+            batch_size = 20
+            
+            for i in range(0, lastframe, batch_size):
+                im_batch = [imtv[:, :, vframe:vframe+5, :, :] for vframe in range(i, min(lastframe, i+batch_size))]
+                if len(im_batch) == 0:
+                    break
+                im_in = torch.cat(im_batch, 0)
+                im_out = self.instance.__S__.forward_lip(im_in.to(self.device))
+                im_feat.append(im_out.data.cpu())
+                
+                cc_batch = [cct[:, :, :, vframe*4:vframe*4+20] for vframe in range(i, min(lastframe, i+batch_size))]
+                cc_in = torch.cat(cc_batch, 0)
+                cc_out = self.instance.__S__.forward_aud(cc_in.to(self.device))
+                cc_feat.append(cc_out.data.cpu())
+                
+            if len(im_feat) == 0 or len(cc_feat) == 0:
+                return 0.0
+                
+            im_feat = torch.cat(im_feat, 0)
+            cc_feat = torch.cat(cc_feat, 0)
+            
+            def calc_pdist(feat1, feat2, vshift=10):
+                win_size = vshift * 2 + 1
+                feat2p = torch.nn.functional.pad(feat2, (0, 0, vshift, vshift))
+                dists = []
+                for i in range(0, len(feat1)):
+                    dists.append(torch.nn.functional.pairwise_distance(feat1[[i], :].repeat(win_size, 1), feat2p[i:i+win_size, :]))
+                return dists
+                
+            dists = calc_pdist(im_feat, cc_feat, vshift=15)
+            mdist = torch.mean(torch.stack(dists, 1), 1)
+            minval, minidx = torch.min(mdist, 0)
+            
+            offset = 15 - minidx.item()
+            return offset * (1000.0 / 25.0)
 
     return SyncNetWrapper()
 
