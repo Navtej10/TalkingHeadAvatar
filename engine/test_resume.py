@@ -13,12 +13,12 @@ image_path = os.path.abspath("../data/input/a95a61cf_image.jpg")
 audio_path = os.path.abspath("../data/input/a95a61cf_audio.wav")
 
 try:
-    print("Starting pipeline resume from Stage 3...")
+    print("Starting pipeline resume from Stage 6...")
     output = run_pipeline(
-        "a95a61cf_stage3plus",
+        "a95a61cf_stage6plus",
         image=image_path,
         audio=audio_path,
-        skip_to_stage=3,
+        skip_to_stage=6,
         cached_job_id="a95a61cf",
     )
     print("Pipeline completed successfully:", output)

@@ -155,6 +155,8 @@ def load_wav2lip():
             self.profile = get_active_profile()
             self.device = torch.device(self.profile.device)
             self.dtype = torch.float16 if "cuda" in str(self.device).lower() else torch.float32
+            self._cached_audio_path = None
+            self._cached_mel = None
             
             global _WAV2LIP_MODELS
             if _WAV2LIP_MODELS is None:
@@ -190,19 +192,49 @@ def load_wav2lip():
             global _WAV2LIP_MODELS
             _WAV2LIP_MODELS = self.models
 
-        def refine_mouth(self, mouth_crop_batch, mel_spectrogram_window):
+        def refine_mouth(self, mouth_crop_batch, audio_waveform_path, frame_idx=None, fps=None):
             import cv2
             import numpy as np
             import torch
+            import sys
+            import os
             
             if isinstance(mouth_crop_batch, np.ndarray):
                 mouth_crop_batch = [mouth_crop_batch]
-            if isinstance(mel_spectrogram_window, str):
-                return mouth_crop_batch
+            
+            if self._cached_audio_path != audio_waveform_path:
+                vendor_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "vendor"))
+                wav2lip_path = os.path.join(vendor_dir, "Wav2Lip")
+                added = False
+                if wav2lip_path not in sys.path:
+                    sys.path.insert(0, wav2lip_path)
+                    added = True
+                    
+                import audio
+                wav = audio.load_wav(audio_waveform_path, 16000)
+                self._cached_mel = audio.melspectrogram(wav)
+                self._cached_audio_path = audio_waveform_path
+                
+                if added:
+                    sys.path.remove(wav2lip_path)
+                    
+            if frame_idx is None or fps is None:
+                mel_window = self._cached_mel
+            else:
+                mel_step_size = 16
+                mel_idx_multiplier = 80. / fps
+                start_idx = int(frame_idx * mel_idx_multiplier)
+                if start_idx + mel_step_size > self._cached_mel.shape[1]:
+                    mel_window = self._cached_mel[:, -mel_step_size:]
+                else:
+                    mel_window = self._cached_mel[:, start_idx : start_idx + mel_step_size]
             
             imgs = []
+            orig_sizes = []
             for img in mouth_crop_batch:
-                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                orig_sizes.append((img.shape[1], img.shape[0]))
+                img_resized = cv2.resize(img, (96, 96))
+                img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
                 imgs.append(img_rgb)
             
             img_tensor = torch.from_numpy(np.stack(imgs)).float() / 255.0
@@ -213,7 +245,12 @@ def load_wav2lip():
             
             x = torch.cat([img_masked, img_tensor], dim=1).to(self.device, dtype=self.dtype)
             
-            mel_tensor = torch.tensor(np.array(mel_spectrogram_window), device=self.device, dtype=self.dtype)
+            mel_tensor = torch.tensor(mel_window, device=self.device, dtype=self.dtype)
+            mel_tensor = mel_tensor.unsqueeze(0).unsqueeze(0)
+            
+            batch_size = x.shape[0]
+            if batch_size > 1:
+                mel_tensor = mel_tensor.repeat(batch_size, 1, 1, 1)
             
             with torch.no_grad():
                 out_tensor = self.models["generator"](mel_tensor, x)
@@ -223,9 +260,10 @@ def load_wav2lip():
             out_np = out_tensor.permute(0, 2, 3, 1).cpu().float().numpy()
             
             out_batch = []
-            for d in out_np:
+            for d, (w, h) in zip(out_np, orig_sizes):
                 d = np.clip(d * 255, 0, 255).astype(np.uint8)
                 d = cv2.cvtColor(d, cv2.COLOR_RGB2BGR)
+                d = cv2.resize(d, (w, h))
                 out_batch.append(d)
                 
             return out_batch

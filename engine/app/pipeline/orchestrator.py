@@ -6,9 +6,16 @@ Swap, reorder, or skip stages here as the pipeline evolves (e.g. skip
 stage8/stage7 entirely on the cpu_dev profile — already handled inside
 those stages via config, but you could also do it here for clarity).
 """
+import os
+import time
+import cv2
+from datetime import datetime
 from typing import Optional
 
 from app.config import INPUT_DIR, TMP_DIR
+from app.core.identity_store import load_identity
+from app.models.validation import validate_all_checkpoints
+from app.pipeline.base import PipelineStageError
 from app.pipeline.stage1_face_processing import FaceProcessingStage
 from app.pipeline.stage2_identity_encoding import IdentityEncodingStage
 from app.pipeline.stage2b_audio_prep import AudioPreparationStage
@@ -30,8 +37,8 @@ STAGES = [
     GenerationStage(),
     LipRefinementStage(),
     FaceRestorationStage(),
-    TemporalStabilizationStage(),
     FrameInterpolationStage(),
+    TemporalStabilizationStage(),
     AssemblyStage(),
 ]
 
@@ -63,12 +70,7 @@ def run_pipeline(
     skip_to_stage: Optional[int] = None,
     cached_job_id: Optional[str] = None,
 ) -> str:
-    import os
-    from app.core.identity_store import load_identity
-    from app.models.validation import validate_all_checkpoints
-    import cv2
 
-    validate_all_checkpoints()
 
     os.makedirs(INPUT_DIR, exist_ok=True)
     os.makedirs(f"{TMP_DIR}/{job_id}", exist_ok=True)
@@ -101,6 +103,13 @@ def run_pipeline(
 
     # ── Dev resume: skip_to_stage + cached_job_id (test scripts only) ──────────
     if skip_to_stage is not None and cached_job_id is not None:
+        target_name = _STAGE_MAP.get(skip_to_stage)
+        if target_name is None:
+            raise ValueError(f"Invalid skip_to_stage: {skip_to_stage}. Valid stages are: {list(_STAGE_MAP.keys())}")
+            
+        if identity_name and image is None and skip_to_stage in [1, 2]:
+            raise ValueError("Cannot skip to stage 1 or 2 with an identity_name but no input image.")
+
         if "audio" not in context:
             context["audio"] = {}
         if not context["audio"].get("waveform_path"):
@@ -114,31 +123,36 @@ def run_pipeline(
                 context["frames"] = {}
             context["frames"]["raw"] = f"{TMP_DIR}/{cached_job_id}/frames_raw"
 
-        target_name = _STAGE_MAP.get(skip_to_stage)
-        if target_name:
-            start_appending = False
-            new_stages = []
-            for s in stages_to_run:
-                if s.name == target_name:
-                    start_appending = True
-                if start_appending:
-                    new_stages.append(s)
-            # Always prepend face_processing so context['face'] is available
-            face_stage = next((s for s in STAGES if s.name == "face_processing"), None)
-            if face_stage and (not new_stages or new_stages[0].name != "face_processing"):
-                new_stages.insert(0, face_stage)
-            stages_to_run = new_stages
-            print(f"[dev] Resuming from Stage {skip_to_stage} ({target_name}) using cached job {cached_job_id}")
+        start_appending = False
+        new_stages = []
+        for s in stages_to_run:
+            if s.name == target_name:
+                start_appending = True
+            if start_appending:
+                new_stages.append(s)
+        
+        # Only prepend face_processing so context['face'] is available if not already populated
+        face_stage = next((s for s in STAGES if s.name == "face_processing"), None)
+        if face_stage and "face" not in context and (not new_stages or new_stages[0].name != "face_processing"):
+            new_stages.insert(0, face_stage)
+        stages_to_run = new_stages
+        print(f"[dev] Resuming from Stage {skip_to_stage} ({target_name}) using cached job {cached_job_id}")
+
+    validate_all_checkpoints(stages_to_run)
 
     # ── Run stages ─────────────────────────────────────────────────────────────
-    import time
-    from datetime import datetime
     for stage in stages_to_run:
         start_time = time.time()
         timestamp_start = datetime.now().strftime("%H:%M:%S")
         print(f"[{timestamp_start}] STARTING stage: {stage.name}")
 
-        context = stage.run(context)
+        try:
+            context = stage.run(context)
+        except Exception as e:
+            elapsed = time.time() - start_time
+            timestamp_end = datetime.now().strftime("%H:%M:%S")
+            print(f"[{timestamp_end}] FAILED stage: {stage.name} ({elapsed:.1f}s)")
+            raise PipelineStageError(stage.name, job_id, e) from e
 
         elapsed = time.time() - start_time
         timestamp_end = datetime.now().strftime("%H:%M:%S")

@@ -99,7 +99,7 @@ class LipRefinementStage(PipelineStage):
                         # Call refiner
                         # The real models (Wav2Lip/MuseTalk) don't use discrete visemes or audio_offset_ms,
                         # so we remove those unused kwargs cleanly.
-                        refined_crop = refiner.refine_mouth(mouth_crop, audio_waveform_path)
+                        refined_crop = refiner.refine_mouth(mouth_crop, audio_waveform_path, frame_idx=f_idx, fps=profile.target_fps)
                         
                         # 1. Color Transfer (Reinhard)
                         def reinhard_color_transfer(src, tgt):
